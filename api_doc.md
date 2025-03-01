@@ -1,239 +1,195 @@
-# Image Processing System - API Documentation
+Let's continue with the Low-Level Design (LLD) document. This should explain the technical architecture of your system, component interactions, and data flow.
 
-## Overview
+# Low-Level Design Document (low_level_design.md)
 
-This document provides detailed specifications for the Image Processing System's API endpoints. The system processes image data from CSV files, compresses images, and provides access to the processed results.
+```markdown
+# Image Processing System - Low-Level Design
 
-## Base URL
+## 1. System Architecture
+
+The Image Processing System follows a distributed architecture with several components working together to provide efficient, asynchronous processing of images from CSV data.
+
+![System Architecture Diagram](images/system_architecture.png)
+
+### 1.1 Key Components
+
+1. **Flask Web Application**
+   - Serves API endpoints
+   - Validates input data
+   - Coordinates interactions between other components
+   - Handles request and response formatting
+
+2. **PostgreSQL Database**
+   - Stores request metadata
+   - Tracks processing status
+   - Maintains relationships between requests and products
+   - Persists both input and output image URLs
+
+3. **Redis Message Broker**
+   - Facilitates asynchronous task management
+   - Queues image processing tasks
+   - Provides task status tracking
+
+4. **Celery Worker**
+   - Executes background image processing
+   - Updates processing status in the database
+   - Triggers webhooks upon completion
+   - Handles errors and partial failures
+
+5. **Image Processing Service**
+   - Downloads images from URLs
+   - Compresses images to 50% quality
+   - Creates temporary storage for processed files
+
+## 2. Component Interactions
+
+### 2.1 Request Flow
+
+1. **CSV Upload and Validation**
+   - Client uploads CSV file to Flask application
+   - Application validates CSV format and content
+   - Application creates database entries for the request and products
+   - Application returns a unique request ID to the client
+
+2. **Task Queuing**
+   - Flask application sends the request ID to Celery via Redis
+   - Celery worker picks up the task from the queue
+
+3. **Image Processing**
+   - Celery worker retrieves product data from the database
+   - For each product and image URL:
+     - Download the image
+     - Compress using PIL/Pillow
+     - Generate output URL
+     - Update database with status and output URL
+   - Worker updates overall request status
+
+4. **Completion and Notification**
+   - Upon completion, Celery worker updates request status in database
+   - If webhook URL is registered, sends notification to the client
+   - Client can retrieve completed data via the download endpoint
+
+### 2.2 Sequence Diagram
 
 ```
-http://localhost:5000/api
+Client          Flask App            Database           Redis           Celery Worker
+  |                |                    |                 |                   |
+  | Upload CSV     |                    |                 |                   |
+  |--------------->|                    |                 |                   |
+  |                | Validate           |                 |                   |
+  |                |----------------    |                 |                   |
+  |                |                |   |                 |                   |
+  |                |<---------------    |                 |                   |
+  |                | Create Request     |                 |                   |
+  |                |------------------->|                 |                   |
+  |                | Create Products    |                 |                   |
+  |                |------------------->|                 |                   |
+  | Return ID      |                    |                 |                   |
+  |<---------------|                    |                 |                   |
+  |                | Queue Task         |                 |                   |
+  |                |------------------------------------ >|                   |
+  |                |                    |                 | Dequeue Task      |
+  |                |                    |                 |------------------>|
+  |                |                    |                 |                   |
+  |                |                    | Get Data        |                   |
+  |                |                    |<------------------|                 |
+  |                |                    |                 |                   |
+  |                |                    |                 |                   | Process Images
+  |                |                    |                 |                   |-------------
+  |                |                    |                 |                   |            |
+  |                |                    |                 |                   |<------------
+  |                |                    | Update Status   |                   |
+  |                |                    |<------------------|                 |
+  |                |                    |                 |                   |
+  | Check Status   |                    |                 |                   |
+  |--------------->|                    |                 |                   |
+  |                | Query Status       |                 |                   |
+  |                |------------------->|                 |                   |
+  | Return Status  |                    |                 |                   |
+  |<---------------|                    |                 |                   |
+  |                |                    |                 |                   |
+  |                |                    |                 |                   | Completion
+  |                |                    |                 |                   |-------------
+  |                |                    | Update Final    |                   |            |
+  |                |                    |<------------------|                 |<------------
+  |                |                    |                 |                   |
+  |                |                    |                 |                   | Send Webhook
+  |                |                    |                 |                   |------------->
+  |                |                    |                 |                   |
+  | Download       |                    |                 |                   |
+  |--------------->|                    |                 |                   |
+  |                | Get Data           |                 |                   |
+  |                |------------------->|                 |                   |
+  | Return CSV     |                    |                 |                   |
+  |<---------------|                    |                 |                   |
 ```
 
-## API Endpoints
+## 3. Data Flow
 
-### 1. Upload CSV
+### 3.1 Upload Phase
+1. Client submits CSV file
+2. Flask validates and parses CSV
+3. Request and product records created in database
+4. Processing task queued in Redis
 
-Uploads a CSV file containing product data and image URLs for processing.
+### 3.2 Processing Phase
+1. Celery worker retrieves request data
+2. For each product:
+   - Updates status to "PROCESSING"
+   - Downloads images from input URLs
+   - Compresses images
+   - Generates output URLs
+   - Updates status to "COMPLETED" or "FAILED"
+3. Overall request status updated
 
-| Property | Value |
-|----------|-------|
-| Endpoint | `/upload` |
-| Method | `POST` |
-| Content-Type | `multipart/form-data` |
+### 3.3 Retrieval Phase
+1. Client queries status endpoint
+2. When complete, client downloads processed data as CSV
 
-#### Request Parameters
+## 4. Error Handling
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| file | File | Yes | CSV file with required columns |
+### 4.1 Error Categories
+1. **CSV Validation Errors**
+   - Missing required columns
+   - Invalid format
+   - Empty file
 
-#### CSV Format Requirements
+2. **Processing Errors**
+   - Image download failures
+   - Image processing failures
+   - Invalid image formats
 
-The CSV file must include the following columns:
-- `S. No.` - Serial number
-- `Product Name` - Name of the product
-- `Input Image Urls` - Comma-separated list of image URLs to process
+3. **System Errors**
+   - Database connection issues
+   - Redis connection failures
+   - Worker failures
 
-#### Responses
+### 4.2 Error Recovery
+1. Per-product error isolation
+   - Processing continues for other products if one fails
+   - Failed products marked accordingly
+   - Partially successful requests still produce usable output
 
-**Success Response (201 Created)**
+2. Status reporting
+   - Detailed status for each product
+   - Overall request status reflects partial success
 
-```json
-{
-  "request_id": "61f078fa-c81a-4f96-aa45-40880918db3a"
-}
+## 5. Technical Considerations
+
+### 5.1 Scalability
+- Horizontal scaling of Celery workers possible
+- Database connection pooling for higher load
+- Redis persistence for task reliability
+
+### 5.2 Security
+- Input validation prevents injection attacks
+- Temporary file cleanup prevents disk space issues
+- Cross-origin considerations for API endpoints
+
+### 5.3 Performance
+- Asynchronous processing allows handling multiple requests
+- Individual product failures don't block entire requests
+- Task queuing prevents server overload
 ```
 
-**Error Responses**
-
-- **400 Bad Request**
-  ```json
-  {
-    "error": "No file part"
-  }
-  ```
-  ```json
-  {
-    "error": "No selected file"
-  }
-  ```
-  ```json
-  {
-    "error": "CSV missing required columns"
-  }
-  ```
-  ```json
-  {
-    "error": "Invalid file type. Only CSV files are allowed."
-  }
-  ```
-
-### 2. Check Status
-
-Checks the processing status of a request using the request ID.
-
-| Property | Value |
-|----------|-------|
-| Endpoint | `/status/{request_id}` |
-| Method | `GET` |
-
-#### Path Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| request_id | String | Yes | Unique ID returned from the upload endpoint |
-
-#### Responses
-
-**Success Response (200 OK)**
-
-```json
-{
-  "request_id": "61f078fa-c81a-4f96-aa45-40880918db3a",
-  "status": "COMPLETED",
-  "progress": 100.0,
-  "details": {
-    "total": 2,
-    "completed": 2,
-    "failed": 0,
-    "in_progress": 0
-  },
-  "created_at": "Fri, 01 Mar 2025 22:05:17 GMT",
-  "updated_at": "Fri, 01 Mar 2025 22:05:30 GMT"
-}
-```
-
-**Error Response (404 Not Found)**
-
-```json
-{
-  "error": "Request not found"
-}
-```
-
-### 3. Download Results
-
-Downloads the processed results as a CSV file.
-
-| Property | Value |
-|----------|-------|
-| Endpoint | `/download/{request_id}` |
-| Method | `GET` |
-
-#### Path Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| request_id | String | Yes | Unique ID returned from the upload endpoint |
-
-#### Responses
-
-**Success Response (200 OK)**
-
-Returns a CSV file with the following format:
-```
-S. No.,Product Name,Input Image Urls,Output Image Urls
-1,SKU1,"https://picsum.photos/200/300,https://picsum.photos/200/301","https://www.public-image-output-300,https://www.public-image-output-301"
-2,SKU2,"https://picsum.photos/201/300,https://picsum.photos/202/300","https://www.public-image-output-300,https://www.public-image-output-300"
-```
-
-**Error Responses**
-
-- **404 Not Found**
-  ```json
-  {
-    "error": "Request not found"
-  }
-  ```
-
-- **400 Bad Request**
-  ```json
-  {
-    "error": "Request processing not complete"
-  }
-  ```
-
-- **500 Internal Server Error**
-  ```json
-  {
-    "error": "Failed to generate CSV"
-  }
-  ```
-
-### 4. Register Webhook (Bonus)
-
-Registers a webhook URL to be notified when processing completes.
-
-| Property | Value |
-|----------|-------|
-| Endpoint | `/webhook` |
-| Method | `POST` |
-| Content-Type | `application/json` |
-
-#### Request Body
-
-```json
-{
-  "request_id": "61f078fa-c81a-4f96-aa45-40880918db3a",
-  "webhook_url": "https://webhook.example.com/callback"
-}
-```
-
-#### Responses
-
-**Success Response (200 OK)**
-
-```json
-{
-  "message": "Webhook registered successfully"
-}
-```
-
-**Error Responses**
-
-- **400 Bad Request**
-  ```json
-  {
-    "error": "Missing required fields: request_id and webhook_url"
-  }
-  ```
-
-- **404 Not Found**
-  ```json
-  {
-    "error": "Request not found"
-  }
-  ```
-
-## Webhook Notification Format
-
-When processing completes, the system will send a POST request to the registered webhook URL with the following payload:
-
-```json
-{
-  "request_id": "61f078fa-c81a-4f96-aa45-40880918db3a",
-  "status": "COMPLETED",
-  "message": "Processing completed"
-}
-```
-
-## Status Codes
-
-| Status Code | Description |
-|-------------|-------------|
-| 200 | OK - The request succeeded |
-| 201 | Created - The resource was successfully created |
-| 400 | Bad Request - Invalid input or parameters |
-| 404 | Not Found - The requested resource does not exist |
-| 500 | Internal Server Error - Server-side error |
-
-## Processing Statuses
-
-| Status | Description |
-|--------|-------------|
-| PENDING | Request received but processing has not started |
-| PROCESSING | Images are currently being processed |
-| COMPLETED | All images have been successfully processed |
-| PARTIALLY_COMPLETED | Some images were processed successfully, others failed |
-| FAILED | Processing failed completely |
+This document covers the technical design of your system. Next, we can create the documentation for the asynchronous workers. Would you like me to proceed with that?
